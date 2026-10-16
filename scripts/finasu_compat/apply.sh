@@ -343,6 +343,35 @@ KSU_KBUILD_EOF
     NEW_MODEL=1
   fi
 
+  # 0f) 新版 FinaSU 把 userspace_stack_buffer 从 sucompat.c 移到了 include/util.h，
+  #     而上游 10_enable 补丁会删除 sucompat.c 的 #include "util.h"，
+  #     导致 -Werror=implicit-function-declaration，这里按需补回。
+  FINASU_SUCOMPAT="$FINASU_KSU/feature/sucompat.c"
+  if [ -f "$FINASU_SUCOMPAT" ] \
+    && grep -q 'userspace_stack_buffer' "$FINASU_SUCOMPAT" \
+    && ! grep -q '#include "util.h"' "$FINASU_SUCOMPAT"; then
+    sed -i '/^#include "klog.h"/a #include "util.h"' "$FINASU_SUCOMPAT"
+    echo "sucompat.c: 已补回 #include \"util.h\"（userspace_stack_buffer 移至 util.h）"
+  fi
+
+  # 0g) 新版 FinaSU 的 preinit 通过 ksu_syscall_table 直接调用原始 execve；
+  #     上游补丁把 hook/$(ARCH)/syscall_hook.o 移出编译，并从 init.c 删除
+  #     ksu_syscall_hook_init()，会导致 ksu_syscall_table 未定义且未初始化。
+  #     检测到 preinit 依赖时按需恢复。
+  if [ -f "$FINASU_KSU/preinit/preinit.c" ] \
+    && grep -q 'ksu_syscall_table' "$FINASU_KSU/preinit/preinit.c"; then
+    for _arch in arm64 x86_64 riscv64; do
+      if grep -q "kernelsu-objs += hook/$_arch/patch_memory.o" "$FINASU_KSU/Kbuild" \
+        && ! grep -q "kernelsu-objs += hook/$_arch/syscall_hook.o" "$FINASU_KSU/Kbuild"; then
+        sed -i "s|^kernelsu-objs += hook/$_arch/patch_memory.o\$|&\nkernelsu-objs += hook/$_arch/syscall_hook.o|" "$FINASU_KSU/Kbuild"
+      fi
+    done
+    if ! grep -q 'ksu_syscall_hook_init();' "$FINASU_INIT"; then
+      sed -i 's|^\([[:space:]]*\)ksu_init_symbol_resolver();$|&\n\1ksu_syscall_hook_init();|' "$FINASU_INIT"
+    fi
+    echo "preinit 依赖 syscall_hook：已恢复 hook/\$(ARCH)/syscall_hook.o 与 ksu_syscall_hook_init()"
+  fi
+
   # 结果校验，防止上游代码结构变化后静默失效
   if ! grep -q 'susfs_init();' "$FINASU_INIT" \
     || ! grep -q 'ksu_sucompat_init();' "$FINASU_INIT" \
@@ -372,8 +401,14 @@ KSU_KBUILD_EOF
     echo "::error::FinaSU selinux_hide.c 的 security_*_with_policy 仍未全局化（6.6 会链接失败）" >&2
     exit 1
   fi
-  if grep -qE 'ksu_syscall_hook_init\(\)|ksu_syscall_hook_manager_(init|exit)\(\)' "$FINASU_INIT"; then
-    echo "::error::FinaSU init.c 仍存在指向已移除模块的调用" >&2
+  if grep -qE 'ksu_syscall_hook_manager_(init|exit)\(\)' "$FINASU_INIT"; then
+    echo "::error::FinaSU init.c 仍存在指向已移除模块的调用（syscall_hook_manager）" >&2
+    exit 1
+  fi
+  # ksu_syscall_hook_init() 仅在 syscall_hook.o 参与编译（新版 preinit 需要）时才允许
+  if grep -q 'ksu_syscall_hook_init();' "$FINASU_INIT" \
+    && ! grep -q 'hook/arm64/syscall_hook.o' "$FINASU_KSU/Kbuild"; then
+    echo "::error::init.c 调用了 ksu_syscall_hook_init() 但未编译 syscall_hook.o" >&2
     exit 1
   fi
 fi
