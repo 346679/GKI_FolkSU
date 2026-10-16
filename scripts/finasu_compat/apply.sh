@@ -209,6 +209,24 @@ for dirpath, _dirs, files in os.walk(root):
 forced_call = "                ksu_feature_apply_forced();\n" if has_forced else ""
 print("ksud_integration.c: ksu_feature_apply_forced 存在=%s，%s该调用" % (has_forced, "保留" if has_forced else "跳过"))
 
+# ksu_preinit_release() 是 preinit（UAPI v6）新增的；旧形态源码没有，按符号存在性决定是否插入。
+has_preinit = False
+for dirpath, _dirs, files in os.walk(root):
+    for f in files:
+        if f == "ksud_integration.c" or not f.endswith((".c", ".h")):
+            continue
+        try:
+            with open(os.path.join(dirpath, f), encoding="utf-8", errors="ignore") as fh:
+                if "ksu_preinit_release" in fh.read():
+                    has_preinit = True
+                    break
+        except OSError:
+            pass
+    if has_preinit:
+        break
+preinit_call = "                ksu_preinit_release();\n" if has_preinit else ""
+print("ksud_integration.c: ksu_preinit_release 存在=%s，%s该调用" % (has_preinit, "保留" if has_preinit else "跳过"))
+
 start = src.index(old_sig)
 end = src.index("\n}\n", start) + len("\n}\n")
 
@@ -240,6 +258,7 @@ new_func = (
     "            char buf[16];\n"
     "            if (check_argv(*argv, 1, \"second_stage\", buf, sizeof(buf))) {\n"
     "                pr_info(\"/system/bin/init second_stage executed\\n\");\n"
+    + preinit_call +
     "                ksu_selinux_hide_handle_second_stage();\n"
     "                apply_kernelsu_rules();\n"
     "                cache_sid();\n"
@@ -255,6 +274,7 @@ new_func = (
     "            char buf[16];\n"
     "            if (check_argv(*argv, 1, \"-Xzygote\", buf, sizeof(buf))) {\n"
     "                pr_info(\"exec zygote, /data prepared, second_stage: %d\\n\", !static_key_enabled(&is_init_second_stage_not_executed));\n"
+    + preinit_call +
     "                on_post_fs_data();\n"
     "                static_branch_disable(&is_first_zygote);\n"
     "            }\n"
@@ -270,6 +290,15 @@ open(path, "w", encoding="utf-8").write(src)
 print("ksud_integration.c: 已按补丁本意把 ksu_handle_execveat_ksud 改写为 fd 版签名")
 PYEOF
     grep -n '^int ksu_handle_execveat_ksud(int \*fd' "$FINASU_KSI"
+  fi
+
+  # 0h) 上游补丁「添加静态键声明」的 hunk 可能因新版 include 变化而失败，
+  #     但使用这些静态键的代码已应用（exec 钩子改写、init_rc/input hook），
+  #     缺定义会导致 -Werror=undeclared-identifier，这里按需补上。
+  if grep -qE '&(ksu_is_init_rc_hook_enabled|ksu_is_input_hook_enabled|is_init_second_stage_not_executed|is_first_zygote)\)' "$FINASU_KSI" \
+    && ! grep -q 'DEFINE_STATIC_KEY_TRUE(is_first_zygote)' "$FINASU_KSI"; then
+    sed -i 's|^// clang-format off$|DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);\nDEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled);\nDEFINE_STATIC_KEY_TRUE(is_init_second_stage_not_executed);\nDEFINE_STATIC_KEY_TRUE(is_first_zygote);\n\n// clang-format off|' "$FINASU_KSI"
+    echo "ksud_integration.c: 已补回缺失的静态键声明"
   fi
 
   # 1) 移除已不参与编译的模块的调用（仅剩 syscall hook / syscall hook manager）
