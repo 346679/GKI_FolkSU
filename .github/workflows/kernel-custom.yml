@@ -205,6 +205,11 @@ on:
         description: "自定义版本名 (可选)"
         required: false
         type: string
+      ksu_commit_override:
+        description: "测试用：覆盖 KernelSU 检出的提交（留空=自动跟随最新 Release 的提交）"
+        required: false
+        type: string
+        default: ""
       build_time:
         description: "自定义构建时间 (留空=自动获取当前北京时间) (示例 Sun Dec  1 08:10:00 UTC 2026)"
         required: false
@@ -406,7 +411,7 @@ jobs:
       ksu_variant: ${{ inputs.kernelsu_variant }}
       # 内核侧 KernelSU 检出到官方最新上传 Manager 构建的同一提交，
       # 使内核 KSU 版本与拉取的管理器安装包严格一致（BakaSU / FinaSU 生效）
-      ksu_commit: ${{ needs.get-ksu-manager.outputs.ksuCommit }}
+      ksu_commit: ${{ inputs.ksu_commit_override || needs.get-ksu-manager.outputs.ksuCommit }}
       ksu_cert_size: ${{ needs.get-ksu-manager.outputs.managerCertSize }}
       ksu_cert_hash: ${{ needs.get-ksu-manager.outputs.managerCertHash }}
       version: ${{ inputs.version || '' }}
